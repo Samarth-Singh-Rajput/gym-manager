@@ -198,12 +198,14 @@ function shareMemberCard(token, memberName) {
   async function startScanner() {
     try {
       scanner = new Html5Qrcode("qr-reader");
+      const cameras = await Html5Qrcode.getCameras();
+      console.log("Available cameras:", cameras);
       scannerRef.current = scanner;
 
       await scanner.start(
-        { facingMode: "environment" },
+        cameras[3].id,
         {
-          fps: 10,
+          fps: 15,
           qrbox: { width: 250, height: 250 },
         },
         async (decodedText) => {
