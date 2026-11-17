@@ -17,6 +17,7 @@ import {
   doc,
   setDoc,
   updateDoc,
+  arrayUnion,
 } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import {
@@ -62,6 +63,29 @@ function calculateValidity(paymentDate, months) {
   return `${y}-${m}-${d}`;
 }
 
+function calculateRenewalValidity(member, paymentDate, months) {
+  const today = todayString();
+
+  // Active membership: extend from the day after expiry.
+  // Expired membership: start from the new payment date.
+  const isActive = member.validUntil >= today;
+
+  const startDate = isActive ? member.validUntil : paymentDate;
+  const start = new Date(`${startDate}T00:00:00`);
+
+  if (isActive) {
+    start.setDate(start.getDate() + 1);
+  }
+
+  const nextPaymentDate = [
+    start.getFullYear(),
+    String(start.getMonth() + 1).padStart(2, "0"),
+    String(start.getDate()).padStart(2, "0"),
+  ].join("-");
+
+  return calculateValidity(nextPaymentDate, months);
+}
+
 
 function formatDate(value) {
   if (!value) return "—";
@@ -88,6 +112,12 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [search, setSearch] = useState("");
   const [showForm, setShowForm] = useState(false);
+  const [renewingMember, setRenewingMember] = useState(null);
+
+  const [renewalForm, setRenewalForm] = useState({
+    paymentDate: todayString(),
+    durationMonths: "1",
+  });
   const [showScanner, setShowScanner] = useState(false);
   const [scanResult, setScanResult] = useState(null);
   const [scannerError, setScannerError] = useState("");
@@ -367,6 +397,62 @@ function shareMemberCard(token, memberName) {
     }
   }
 
+  async function handleRenewMembership(e) {
+  e.preventDefault();
+
+  if (!renewingMember || !renewalForm.paymentDate) {
+    alert("Please select a payment date.");
+    return;
+  }
+
+  try {
+    const months = Number(renewalForm.durationMonths);
+
+    const validUntil = calculateRenewalValidity(
+      renewingMember,
+      renewalForm.paymentDate,
+      months
+    );
+
+    const memberRef = doc(db, "members", renewingMember.id);
+
+    const updates = {
+      paymentDate: renewalForm.paymentDate,
+      durationMonths: months,
+      validUntil,
+      paymentHistory: arrayUnion({
+        paymentDate: renewalForm.paymentDate,
+        durationMonths: months,
+        validUntil,
+        recordedAt: new Date().toISOString(),
+      }),
+    };
+
+    await updateDoc(memberRef, updates);
+
+    if (renewingMember.cardToken) {
+      const cardRef = doc(
+        db,
+        "publicCards",
+        renewingMember.cardToken
+      );
+
+      await updateDoc(cardRef, {
+        paymentDate: renewalForm.paymentDate,
+        validUntil,
+      });
+    }
+
+    alert("Membership renewed successfully!");
+
+    setRenewingMember(null);
+    await loadMembers();
+  } catch (error) {
+    console.error("Renewal error:", error);
+    alert("Could not renew membership. Please try again.");
+  }
+  }
+
   const activeCount = members.filter(isActive).length;
   const expiredCount = members.length - activeCount;
 
@@ -582,6 +668,81 @@ function shareMemberCard(token, memberName) {
             </form>
           </section>
         )}
+        
+
+        {renewingMember && (
+          <section className="panel form-panel">
+            <div className="panel-heading">
+              <div>
+                <h2>Renew Membership</h2>
+                <p className="muted">
+                  Renewing membership for {renewingMember.name}
+                </p>
+              </div>
+              <button
+                className="close-button"
+                type="button"
+                onClick={() => setRenewingMember(null)}
+              >
+                ×
+              </button>
+            </div>
+
+            <form onSubmit={handleRenewMembership} className="member-form">
+              <div className="field">
+                <label>Payment date *</label>
+                <input
+                  type="date"
+                  value={renewalForm.paymentDate}
+                  onChange={(e) =>
+                    setRenewalForm({
+                      ...renewalForm,
+                      paymentDate: e.target.value,
+                    })
+                  }
+                  required
+                />
+              </div>
+
+              <div className="field">
+                <label>Membership duration</label>
+                <select
+                  value={renewalForm.durationMonths}
+                  onChange={(e) =>
+                    setRenewalForm({
+                      ...renewalForm,
+                      durationMonths: e.target.value,
+                    })
+                  }
+                >
+                  <option value="1">1 month</option>
+                  <option value="3">3 months</option>
+                  <option value="6">6 months</option>
+                  <option value="12">12 months</option>
+                </select>
+              </div>
+
+              <div className="form-preview">
+                <CalendarDays size={18} />
+                <span>New valid until</span>
+                <strong>
+                  {formatDate(
+                    calculateRenewalValidity(
+                      renewingMember,
+                      renewalForm.paymentDate,
+                      renewalForm.durationMonths
+                    )
+                  )}
+                </strong>
+              </div>
+
+              <button className="primary-button save-button">
+                Renew Membership
+              </button>
+            </form>
+          </section>
+        )}
+
 
         <section className="panel">
           <div className="panel-heading members-heading">
@@ -618,6 +779,7 @@ function shareMemberCard(token, memberName) {
                     <th>Valid until</th>
                     <th>Status</th>
                     <th>Digital card</th>
+                    <th>Renewal</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -660,6 +822,21 @@ function shareMemberCard(token, memberName) {
                         )}
                       </td>
 
+                      <td>
+                        <button
+                          className="card-action"
+                          onClick={() => {
+                            setRenewingMember(member);
+                            setRenewalForm({
+                              paymentDate: todayString(),
+                              durationMonths: "1",
+                            });
+                            setShowForm(false);
+                          }}
+                        >
+                          Renew
+                        </button>
+                    </td>
                     </tr>
                   ))}
                 </tbody>
